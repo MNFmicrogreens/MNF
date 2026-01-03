@@ -149,49 +149,78 @@ const getUpcomingDates = (count = 10) => {
 
 const App: React.FC = () => {
   // State
-  const [users, setUsers] = useState<User[]>(() => {
-    const saved = localStorage.getItem('mnf_users_v14');
-    return saved ? JSON.parse(saved) : [{ name: 'marek', role: 'admin', password: 'marekmnf' }];
-  });
-  
-  const [session, setSession] = useState<User | null>(() => {
-    const s = localStorage.getItem('mnf_session_v14');
-    return s ? JSON.parse(s) : null;
-  });
-  
-  const [orders, setOrders] = useState<Order[]>(() => {
-    const saved = localStorage.getItem('mnf_orders_v14');
-    return saved ? JSON.parse(saved) : [];
-  });
+  // =====================
+// STATE (NO localStorage for auth & orders)
+// =====================
 
-  const [microgreens, setMicrogreens] = useState<Microgreen[]>(() => {
-    const saved = localStorage.getItem('mnf_products_v15');
-    return saved ? JSON.parse(saved) : DEFAULT_MICROGREENS;
-  });
+// users + session už rieši Supabase (nie localStorage)
+const [users, setUsers] = useState<User[]>([]);
+const [session, setSession] = useState<User | null>(null);
 
-  const [harvestedStatus, setHarvestedStatus] = useState<Record<string, boolean>>(() => {
-    const saved = localStorage.getItem('mnf_harvested_v8');
-    return saved ? JSON.parse(saved) : {};
-  });
-  
-  const [view, setView] = useState<'login' | 'register' | 'main' | 'admin_restaurants' | 'delivery_plan' | 'admin_products' | 'profile' | 'history'>('login');
-  const [cart, setCart] = useState<OrderItem[]>([]);
-  
-  const smartAdmin = useMemo(() => getSmartCurrentAdminDay(), []);
-  const [adminFilterDate, setAdminFilterDate] = useState<string>(smartAdmin.date);
-  const [deliveryRegion, setDeliveryRegion] = useState<string>(smartAdmin.region);
-  
-  const [loginForm, setLoginForm] = useState({ name: '', password: '' });
-  const [loginError, setLoginError] = useState('');
-  const [regForm, setRegForm] = useState<User>({ name: '', role: 'customer', password: '', email: '', phone: '', address: '', region: 'Bratislava a okolie' });
-  
-  const [showMenu, setShowMenu] = useState(false);
-  const [editingProduct, setEditingProduct] = useState<Microgreen | null>(null);
-  const [newSizeInput, setNewSizeInput] = useState('');
-  const [productToDelete, setProductToDelete] = useState<Microgreen | null>(null);
+// orders budú čítané zo Supabase
+const [orders, setOrders] = useState<Order[]>([]);
 
-  const [partnerToDelete, setPartnerToDelete] = useState<User | null>(null);
-  const [confirmDeletePassword, setConfirmDeletePassword] = useState('');
+// products – zatiaľ OK v localStorage
+const [microgreens, setMicrogreens] = useState<Microgreen[]>(() => {
+  const saved = localStorage.getItem('mnf_products_v15');
+  return saved ? JSON.parse(saved) : DEFAULT_MICROGREENS;
+});
+
+// harvested – zatiaľ OK v localStorage
+const [harvestedStatus, setHarvestedStatus] = useState<Record<string, boolean>>(() => {
+  const saved = localStorage.getItem('mnf_harvested_v8');
+  return saved ? JSON.parse(saved) : {};
+});
+
+const [view, setView] = useState<
+  'login' |
+  'register' |
+  'main' |
+  'admin_restaurants' |
+  'delivery_plan' |
+  'admin_products' |
+  'profile' |
+  'history'
+>('login');
+
+const [cart, setCart] = useState<OrderItem[]>([]);
+
+const smartAdmin = useMemo(() => getSmartCurrentAdminDay(), []);
+const [adminFilterDate, setAdminFilterDate] = useState<string>(smartAdmin.date);
+const [deliveryRegion, setDeliveryRegion] = useState<string>(smartAdmin.region);
+
+const [loginForm, setLoginForm] = useState({ name: '', password: '' });
+const [loginError, setLoginError] = useState('');
+
+const [regForm, setRegForm] = useState<User>({
+  name: '',
+  role: 'customer',
+  password: '',
+  email: '',
+  phone: '',
+  address: '',
+  region: 'Bratislava a okolie',
+});
+
+const [showMenu, setShowMenu] = useState(false);
+const [editingProduct, setEditingProduct] = useState<Microgreen | null>(null);
+const [newSizeInput, setNewSizeInput] = useState('');
+const [productToDelete, setProductToDelete] = useState<Microgreen | null>(null);
+
+const [partnerToDelete, setPartnerToDelete] = useState<User | null>(null);
+const [confirmDeletePassword, setConfirmDeletePassword] = useState('');
+
+// =====================
+// PERSISTENCE (ONLY products + harvested)
+// =====================
+useEffect(() => {
+  localStorage.setItem('mnf_products_v15', JSON.stringify(microgreens));
+}, [microgreens]);
+
+useEffect(() => {
+  localStorage.setItem('mnf_harvested_v8', JSON.stringify(harvestedStatus));
+}, [harvestedStatus]);
+
 
   // Persistence
   useEffect(() => localStorage.setItem('mnf_users_v14', JSON.stringify(users)), [users]);
