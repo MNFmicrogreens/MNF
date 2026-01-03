@@ -1,3 +1,4 @@
+import { supabase } from './services/supabase';
 
 import React, { useState, useEffect, useMemo } from 'react';
 
@@ -222,174 +223,365 @@ useEffect(() => {
 }, [harvestedStatus]);
 
 
-  // Persistence
-  useEffect(() => localStorage.setItem('mnf_users_v14', JSON.stringify(users)), [users]);
-  useEffect(() => localStorage.setItem('mnf_orders_v14', JSON.stringify(orders)), [orders]);
-  useEffect(() => localStorage.setItem('mnf_products_v15', JSON.stringify(microgreens)), [microgreens]);
-  useEffect(() => localStorage.setItem('mnf_harvested_v8', JSON.stringify(harvestedStatus)), [harvestedStatus]);
-  
-  useEffect(() => {
-    if (session) {
-      localStorage.setItem('mnf_session_v14', JSON.stringify(session));
-      if (view === 'login' || view === 'register') setView('main');
-    } else {
-      localStorage.removeItem('mnf_session_v14');
-      if (view !== 'register') setView('login');
+ // =====================
+// SUPABASE SYNC (auth + partners + orders)
+// =====================
+type PartnerRow = {
+  id: string;
+  user_id: string | null;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+  region: string | null;
+};
+
+type OrderRow = {
+  id: string;
+  partner_id: string;
+  items: any;
+  created_at: string;
+  delivery_date: string | null;
+  is_delivered: boolean | null;
+  status: string | null;
+  partners?: { name: string | null } | null;
+};
+
+const mapPartnerToUser = (p: PartnerRow): User => ({
+  name: p.name ?? 'partner',
+  role: 'customer',
+  email: p.email ?? '',
+  phone: p.phone ?? '',
+  address: p.address ?? '',
+  region: p.region ?? 'Bratislava a okolie',
+});
+
+const mapOrderRowToOrder = (o: OrderRow): Order => ({
+  id: o.id,
+  restaurantName: o.partners?.name ?? 'partner',
+  items: (o.items ?? []) as OrderItem[],
+  timestamp: new Date(o.created_at).getTime(),
+  deliveryDate: o.delivery_date ?? '',
+  isDelivered: !!o.is_delivered,
+});
+
+// helper: načítaj partnera podľa auth.user.id
+const getMyPartner = async () => {
+  const { data: u } = await supabase.auth.getUser();
+  const user = u.user;
+  if (!user) return null;
+
+  const { data: partner, error } = await supabase
+    .from('partners')
+    .select('id, user_id, name, email, phone, address, region')
+    .eq('user_id', user.id)
+    .single();
+
+  if (error) return null;
+  return partner as PartnerRow;
+};
+
+// načítaj orders podľa roly (admin vs customer)
+const refreshData = async (roleOverride?: 'admin' | 'customer') => {
+  const role = roleOverride ?? session?.role;
+
+  // ADMIN: načítaj všetkých partnerov + všetky objednávky
+  if (role === 'admin') {
+    const { data: partners, error: pErr } = await supabase
+      .from('partners')
+      .select('id, user_id, name, email, phone, address, region')
+      .order('name', { ascending: true });
+
+    if (!pErr && partners) setUsers((partners as PartnerRow[]).map(mapPartnerToUser));
+
+    const { data: ordersDb, error: oErr } = await supabase
+      .from('orders')
+      .select('id, partner_id, items, created_at, delivery_date, is_delivered, status, partners(name)')
+      .order('created_at', { ascending: false });
+
+    if (!oErr && ordersDb) setOrders((ordersDb as OrderRow[]).map(mapOrderRowToOrder));
+
+    return;
+  }
+
+  // CUSTOMER: načítaj môj profil + moje objednávky
+  const partner = await getMyPartner();
+  if (partner) {
+    setSession(prev => prev ? { ...prev, ...mapPartnerToUser(partner), role: 'customer' } : prev);
+
+    const { data: ordersDb, error: oErr } = await supabase
+      .from('orders')
+      .select('id, partner_id, items, created_at, delivery_date, is_delivered, status, partners(name)')
+      .eq('partner_id', partner.id)
+      .order('created_at', { ascending: false });
+
+    if (!oErr && ordersDb) setOrders((ordersDb as OrderRow[]).map(mapOrderRowToOrder));
+  }
+};
+
+// auth listener
+useEffect(() => {
+  // pri štarte zisti auth session
+  supabase.auth.getUser().then(async ({ data }) => {
+    if (data.user) {
+      // customer session (admin riešime lokálne)
+      setSession({
+        name: data.user.email ?? 'partner',
+        role: 'customer',
+        email: data.user.email ?? '',
+        password: '',
+        phone: '',
+        address: '',
+        region: 'Bratislava a okolie',
+      } as any);
+
+      setView('main');
+      await refreshData('customer');
     }
-  }, [session]);
+  });
+
+  const { data: sub } = supabase.auth.onAuthStateChange(async (_event, sbSession) => {
+    if (sbSession?.user) {
+      setSession({
+        name: sbSession.user.email ?? 'partner',
+        role: 'customer',
+        email: sbSession.user.email ?? '',
+        password: '',
+        phone: '',
+        address: '',
+        region: 'Bratislava a okolie',
+      } as any);
+
+      setView('main');
+      await refreshData('customer');
+    } else {
+      // customer logout
+      if (session?.role !== 'admin') {
+        setSession(null);
+        setView('login');
+      }
+    }
+  });
+
+  return () => sub.subscription.unsubscribe();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
 
   // --- ACTIONS ---
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoginError('');
-    const found = users.find(u => u.name.toLowerCase() === loginForm.name.toLowerCase() && u.password === loginForm.password);
-    if (found) setSession(found);
-    else setLoginError('Nesprávne heslo alebo meno.');
-  };
+ // --- ACTIONS ---
 
-  const handleRegister = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (users.some(u => u.name.toLowerCase() === regForm.name.toLowerCase())) {
-      alert("Meno je už obsadené.");
-      return;
-    }
-    const newUser: User = { ...regForm, role: 'customer' };
-    setUsers(prev => [...prev, newUser]);
-    setSession(newUser);
-  };
+const handleLogin = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setLoginError('');
 
-  const handleUpdateProfile = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!session) return;
-    setUsers(prev => prev.map(u => u.name === session.name ? session : u));
-    alert("Zmeny uložené.");
-    setView('main');
-  };
+  // ✅ ADMIN (lokálne)
+  if (loginForm.name.trim().toLowerCase() === 'marek' && loginForm.password === 'marekmnf') {
+    setSession({
+      name: 'marek',
+      role: 'admin',
+      password: 'marekmnf', // nech funguje potvrdenie v delete modale
+      email: '',
+      phone: '',
+      address: '',
+      region: 'Bratislava a okolie',
+    } as any);
 
-  const logout = () => { setSession(null); setShowMenu(false); setCart([]); setView('login'); };
+    setView('admin_restaurants');
+    await refreshData('admin');
+    return;
+  }
 
-  const sendOrder = () => {
-    if (!cart.length || !session) return;
-    const deliveryDate = getNextDeliveryDate(session.region || 'Nezaradené');
-    const newOrder: Order = {
-      id: Math.random().toString(36).substr(2, 9),
-      restaurantName: session.name,
-      items: [...cart],
-      timestamp: Date.now(),
-      deliveryDate,
-      isDelivered: false
-    };
-    setOrders(prev => [...prev, newOrder]);
-    setCart([]);
-    alert(`Objednávka odoslaná na termín ${deliveryDate}`);
-  };
+  // ✅ PARTNER (Supabase) — v loginForm.name teraz používame EMAIL
+  const email = loginForm.name.trim().toLowerCase();
+  const password = loginForm.password;
 
-  const toggleHarvested = (microgreenId: string, weight: number) => {
-    const key = `${adminFilterDate}_${microgreenId}_${weight}`;
-    setHarvestedStatus(prev => ({ ...prev, [key]: !prev[key] }));
-  };
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) {
+    setLoginError(error.message);
+    return;
+  }
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file && editingProduct) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setEditingProduct({ ...editingProduct, image: reader.result as string });
-      };
-      reader.readAsDataURL(file);
-    }
-  };
+  // session + refreshData sa spraví cez onAuthStateChange
+};
 
-  const saveProduct = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingProduct) return;
-    if (editingProduct.availableWeights.length === 0) {
-      alert("Pridajte aspoň jednu gramáž/počet.");
-      return;
-    }
-    if (microgreens.find(p => p.id === editingProduct.id)) {
-      setMicrogreens(prev => prev.map(p => p.id === editingProduct.id ? editingProduct : p));
-    } else {
-      setMicrogreens(prev => [...prev, { ...editingProduct, id: Math.random().toString(36).substr(2, 9) }]);
-    }
-    setEditingProduct(null);
-  };
+const handleRegister = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setLoginError('');
 
-  const confirmDeleteProduct = () => {
-    if (productToDelete) {
-      setMicrogreens(prev => prev.filter(p => p.id !== productToDelete.id));
-      setProductToDelete(null);
-    }
-  };
+  const email = (regForm.email || '').trim().toLowerCase();
+  const password = regForm.password || '';
+  const name = regForm.name || '';
 
-  const handleDeletePartner = () => {
-    if (confirmDeletePassword === session?.password) {
-      setUsers(prev => prev.filter(u => u.name !== partnerToDelete?.name));
-      setPartnerToDelete(null);
-      setConfirmDeletePassword('');
-      alert("Partner bol úspešne odstránený.");
-    } else {
-      alert("Nesprávne administrátorské heslo!");
-    }
-  };
+  if (!email || !password || !name) {
+    setLoginError('vyplň meno, email a heslo');
+    return;
+  }
 
-  const addSize = () => {
-    const val = parseInt(newSizeInput);
-    if (isNaN(val) || val <= 0) return;
-    if (editingProduct && !editingProduct.availableWeights.includes(val)) {
-      setEditingProduct({
-        ...editingProduct,
-        availableWeights: [...editingProduct.availableWeights, val].sort((a,b) => a-b)
-      });
-    }
-    setNewSizeInput('');
-  };
+  // 1) create auth user
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  if (error) {
+    setLoginError(error.message);
+    return;
+  }
 
-  const removeSize = (val: number) => {
-    if (editingProduct) {
-      setEditingProduct({
-        ...editingProduct,
-        availableWeights: editingProduct.availableWeights.filter(w => w !== val)
-      });
-    }
-  };
+  const userId = data.user?.id;
+  if (!userId) {
+    setLoginError('registrácia prebehla, ale nenašiel sa user id');
+    return;
+  }
 
-  const toggleAvailability = (id: string) => {
-    setMicrogreens(prev => prev.map(p => p.id === id ? { ...p, isAvailable: !p.isAvailable } : p));
-  };
+  // 2) create partner row
+  const { error: pErr } = await supabase.from('partners').insert({
+    user_id: userId,
+    name: regForm.name,
+    email: regForm.email,
+    phone: regForm.phone,
+    address: regForm.address,
+    region: regForm.region,
+  });
 
-  const toggleDelivered = (orderId: string) => {
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, isDelivered: !o.isDelivered } : o));
-  };
+  if (pErr) {
+    setLoginError(pErr.message);
+    return;
+  }
 
-  const addToCart = (id: string, weight: number) => {
-    setCart(prev => {
-      const existing = prev.find(i => i.microgreenId === id && i.weight === weight);
-      if (existing) return prev.map(i => i === existing ? { ...i, quantity: i.quantity + 1 } : i);
-      return [...prev, { microgreenId: id, weight, quantity: 1 }];
-    });
-  };
+  alert('registrácia úspešná. teraz sa prihlás.');
+  setView('login');
+};
 
-  const removeFromCart = (id: string, weight: number) => {
-    setCart(prev => {
-      const existing = prev.find(i => i.microgreenId === id && i.weight === weight);
-      if (existing && existing.quantity > 1) return prev.map(i => i === existing ? { ...i, quantity: i.quantity - 1 } : i);
-      return prev.filter(i => !(i.microgreenId === id && i.weight === weight));
-    });
-  };
+const handleUpdateProfile = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (!session) return;
 
-  const handleAdminDateChange = (newDate: string) => {
-    setAdminFilterDate(newDate);
-    const [d, m, y] = newDate.split('.').map(Number);
-    const day = new Date(y, m - 1, d).getDay();
-    setDeliveryRegion(day === 1 ? 'Bratislava a okolie' : 'Trenčín a okolie');
-  };
+  // admin profil teraz neriešime
+  if (session.role === 'admin') {
+    alert('admin profil sa zatiaľ neupravuje');
+    return;
+  }
 
-  const openInMaps = (address: string) => {
-    if (!address) return;
-    window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`, '_blank');
-  };
+  const partner = await getMyPartner();
+  if (!partner) {
+    alert('neviem nájsť partnera v databáze');
+    return;
+  }
+
+  const { error } = await supabase
+    .from('partners')
+    .update({
+      email: session.email,
+      phone: session.phone,
+      address: session.address,
+      region: session.region,
+    })
+    .eq('id', partner.id);
+
+  if (error) {
+    alert(error.message);
+    return;
+  }
+
+  alert('zmeny uložené');
+  setView('main');
+  await refreshData('customer');
+};
+
+const logout = async () => {
+  setShowMenu(false);
+  setCart([]);
+
+  if (session?.role === 'admin') {
+    setSession(null);
+    setUsers([]);
+    setOrders([]);
+    setView('login');
+    return;
+  }
+
+  await supabase.auth.signOut();
+  // onAuthStateChange dá view=login + session=null
+};
+
+const sendOrder = async () => {
+  if (!cart.length || !session) return;
+
+  // customer only
+  if (session.role === 'admin') return;
+
+  const partner = await getMyPartner();
+  if (!partner) {
+    alert('partner nie je napojený na účet (partners.user_id)');
+    return;
+  }
+
+  const deliveryDate = getNextDeliveryDate(session.region || 'Nezaradené');
+
+  const { error } = await supabase.from('orders').insert({
+    partner_id: partner.id,
+    items: cart,
+    delivery_date: deliveryDate,
+    is_delivered: false,
+    status: 'new',
+  });
+
+  if (error) {
+    alert(error.message);
+    return;
+  }
+
+  setCart([]);
+  alert(`Objednávka odoslaná na termín ${deliveryDate}`);
+  await refreshData('customer');
+};
+
+const toggleDelivered = async (orderId: string) => {
+  // local UI optimizácia
+  const current = orders.find(o => o.id === orderId);
+  if (!current) return;
+
+  const { error } = await supabase
+    .from('orders')
+    .update({ is_delivered: !current.isDelivered })
+    .eq('id', orderId);
+
+  if (error) {
+    alert(error.message);
+    return;
+  }
+
+  // refresh admin/customer podľa session
+  await refreshData(session?.role ?? 'customer');
+};
+
+const handleDeletePartner = async () => {
+  // len admin
+  if (session?.role !== 'admin') return;
+
+  if (confirmDeletePassword !== session.password) {
+    alert('Nesprávne administrátorské heslo!');
+    return;
+  }
+
+  if (!partnerToDelete?.name) return;
+
+  // zmaže len partner row (auth user nezmaže – na to treba service role)
+  const { error } = await supabase
+    .from('partners')
+    .delete()
+    .eq('name', partnerToDelete.name);
+
+  if (error) {
+    alert(error.message);
+    return;
+  }
+
+  setPartnerToDelete(null);
+  setConfirmDeletePassword('');
+  alert('Partner bol odstránený (len v partners tabuľke).');
+  await refreshData('admin');
+};
+
 
   // --- LOGIKA RADENIA TRASY ---
 
