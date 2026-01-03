@@ -1,0 +1,7 @@
+{
+  "name": "MNF greens",
+  "description": "Profesionálna platforma na objednávanie mikrobyliniek pre reštaurácie s automatickým súhrnom a históriou objednávok.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
